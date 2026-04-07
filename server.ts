@@ -255,6 +255,7 @@ async function serveStatic(path: string): Promise<Response | null> {
 // Main server
 const server = Bun.serve({
   port: 3000,
+  idleTimeout: 255, // 255 seconds max (nginx/proxy default is usually 300s)
   async fetch(req) {
     const url = new URL(req.url);
     const method = req.method;

@@ -159,7 +159,7 @@
     }
 
     // Compress video using browser's MediaRecorder
-    async function compressVideo(file) {
+    async function compressVideo(file, onProgress) {
       return new Promise((resolve, reject) => {
         const video = document.createElement('video');
         video.preload = 'metadata';
@@ -216,6 +216,7 @@
             const blob = new Blob(chunks, { type: 'video/webm' });
             const compressedFile = new File([blob], file.name.replace(/\.[^.]+$/, '.webm'), { type: 'video/webm' });
             URL.revokeObjectURL(video.src);
+            onProgress && onProgress(100);
             resolve(compressedFile);
           };
           
@@ -223,13 +224,20 @@
             video.play();
             mediaRecorder.start();
             
-            // Draw frames to canvas
+            // Draw frames to canvas and report progress
             const drawFrame = () => {
               if (video.paused || video.ended) {
                 mediaRecorder.stop();
                 return;
               }
               ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+              
+              // Report progress based on video playback position
+              if (onProgress && video.duration) {
+                const percent = Math.round((video.currentTime / video.duration) * 100);
+                onProgress(percent);
+              }
+              
               requestAnimationFrame(drawFrame);
             };
             drawFrame();
@@ -258,9 +266,14 @@
         showStatus('Compressing video...', 'info');
         submitBtn.disabled = true;
         submitBtn.textContent = 'Compressing...';
+        progressBar.style.display = 'block';
+        progressFill.style.width = '0%';
         
         try {
-          fileToUpload = await compressVideo(currentFile);
+          fileToUpload = await compressVideo(currentFile, (percent) => {
+            progressFill.style.width = percent + '%';
+            submitBtn.textContent = `Compressing... ${percent}%`;
+          });
           showStatus(`Compressed: ${formatFileSize(currentFile.size)} → ${formatFileSize(fileToUpload.size)}`, 'success');
         } catch (e) {
           console.error('Compression failed, uploading original:', e);
@@ -277,14 +290,16 @@
       submitBtn.disabled = true;
       submitBtn.textContent = 'Uploading...';
       progressBar.style.display = 'block';
+      progressFill.style.width = '0%';
 
       try {
         const xhr = new XMLHttpRequest();
         
         xhr.upload.addEventListener('progress', (e) => {
           if (e.lengthComputable) {
-            const percent = (e.loaded / e.total) * 100;
+            const percent = Math.round((e.loaded / e.total) * 100);
             progressFill.style.width = percent + '%';
+            submitBtn.textContent = `Uploading... ${percent}%`;
           }
         });
 

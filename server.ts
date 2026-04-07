@@ -1,10 +1,8 @@
 import { Database } from "bun:sqlite";
 import { spawn } from "child_process";
-import { readdir, unlink, mkdir, stat, writeFile } from "fs/promises";
+import { readdir, unlink, mkdir, stat, writeFile, open } from "fs/promises";
 import { existsSync, createWriteStream } from "fs";
 import { join, extname } from "path";
-import { pipeline } from "stream/promises";
-import { Readable } from "stream";
 
 // Config
 const MAX_FILE_SIZE = 500 * 1024 * 1024; // 500MB
@@ -12,6 +10,193 @@ const MIN_DISK_SPACE = 500 * 1024 * 1024; // 500MB free required
 const COMPRESS_THRESHOLD = 50 * 1024 * 1024; // 50MB - compress files above this
 const ALLOWED_EXTENSIONS = new Set(["mp4", "mov", "webm", "avi", "mkv", "m4v", "3gp", "flv", "wmv", "ts"]);
 const ALLOWED_MIME_PREFIXES = ["video/"];
+
+// --- Streaming multipart upload parser ---
+// Parses multipart form data and streams file parts to disk without buffering into memory
+interface MultipartResult {
+  fields: Record<string, string>;
+  file: { path: string; name: string; size: number; type: string } | null;
+}
+
+async function parseMultipartStream(req: Request, writePath: string): Promise<MultipartResult> {
+  const contentType = req.headers.get("Content-Type") || "";
+  const boundaryMatch = contentType.match(/boundary=([^\s;]+)/);
+  if (!boundaryMatch) throw new Error("No multipart boundary found");
+  const boundary = boundaryMatch[1];
+
+  const reader = req.body?.getReader();
+  if (!reader) throw new Error("No request body");
+
+  const result: MultipartResult = { fields: {}, file: null };
+  let currentHeaders: Record<string, string> = {};
+  let headerBuf = "";
+  let inHeaders = false;
+  let fileHandle: any = null;
+  let bytesWritten = 0;
+  let fieldName = "";
+  let fileName = "";
+  let fieldType = "";
+  let fieldBuf = "";
+
+  const decoder = new TextDecoder();
+  const boundaryBytes = new TextEncoder().encode(`\r\n--${boundary}`);
+  const endBoundaryBytes = new TextEncoder().encode(`\r\n--${boundary}--`);
+  let buf = new Uint8Array(0);
+
+  async function readMore(): Promise<boolean> {
+    const { done, value } = await reader.read();
+    if (done) return false;
+    const merged = new Uint8Array(buf.length + value.length);
+    merged.set(buf);
+    merged.set(value, buf.length);
+    buf = merged;
+    return true;
+  }
+
+  function indexOf(data: Uint8Array, search: Uint8Array, start = 0): number {
+    for (let i = start; i <= data.length - search.length; i++) {
+      let match = true;
+      for (let j = 0; j < search.length; j++) {
+        if (data[i + j] !== search[j]) { match = false; break; }
+      }
+      if (match) return i;
+    }
+    return -1;
+  }
+
+  // Skip initial boundary
+  while (true) {
+    const hasMore = await readMore();
+    const idx = indexOf(buf, new TextEncoder().encode(`--${boundary}\r\n`));
+    if (idx >= 0) {
+      buf = buf.slice(idx + `--${boundary}\r\n`.length);
+      break;
+    }
+    if (!hasMore) break;
+  }
+
+  while (true) {
+    // Read headers
+    headerBuf = "";
+    currentHeaders = {};
+    while (true) {
+      const idx = indexOf(buf, new TextEncoder().encode("\r\n\r\n"));
+      if (idx >= 0) {
+        headerBuf = decoder.decode(buf.slice(0, idx));
+        buf = buf.slice(idx + 4);
+        break;
+      }
+      if (!(await readMore())) break;
+    }
+
+    // Parse Content-Disposition
+    const cdMatch = headerBuf.match(/Content-Disposition:\s*form-data;\s*(.*)/i);
+    if (!cdMatch) {
+      // Look for next boundary
+      const idx = indexOf(buf, boundaryBytes);
+      if (idx >= 0) buf = buf.slice(idx + boundaryBytes.length);
+      continue;
+    }
+
+    const nameMatch = cdMatch[1].match(/name="([^"]+)"/);
+    const fileMatch = cdMatch[1].match(/filename="([^"]+)"/);
+    fieldName = nameMatch ? nameMatch[1] : "";
+    fileName = fileMatch ? fileMatch[1] : "";
+
+    const ctMatch = headerBuf.match(/Content-Type:\s*(.+)/i);
+    fieldType = ctMatch ? ctMatch[1].trim() : "";
+
+    // Read body until boundary
+    if (fileName) {
+      // This is a file - stream to disk
+      fileHandle = await open(writePath, "w");
+      bytesWritten = 0;
+
+      while (true) {
+        const bIdx = indexOf(buf, boundaryBytes);
+        const eIdx = indexOf(buf, endBoundaryBytes);
+        let cutIdx = -1;
+
+        if (bIdx >= 0) cutIdx = bIdx;
+        if (eIdx >= 0 && (cutIdx < 0 || eIdx < cutIdx)) cutIdx = eIdx;
+        
+        if (cutIdx >= 0) {
+          // Write data before boundary
+          if (cutIdx >= 2) {
+            const chunk = buf.slice(0, cutIdx - 2); // -2 for \r\n before boundary
+            await fileHandle.write(chunk);
+            bytesWritten += chunk.length;
+          }
+          const isEnd = eIdx >= 0 && (cutIdx === eIdx);
+          buf = buf.slice(cutIdx + (isEnd ? endBoundaryBytes.length : boundaryBytes.length));
+          await fileHandle.close();
+          result.file = { path: writePath, name: fileName, size: bytesWritten, type: fieldType };
+          break;
+        }
+
+        // No boundary found yet, check if buf is getting too large
+        if (bytesWritten + buf.length > MAX_FILE_SIZE) {
+          await fileHandle.close();
+          await unlink(writePath).catch(() => {});
+          throw new Error("File too large");
+        }
+
+        // Write most of buf to disk, keep last few bytes (might be partial boundary)
+        const keep = boundaryBytes.length + 2;
+        if (buf.length > keep) {
+          const chunk = buf.slice(0, buf.length - keep);
+          await fileHandle.write(chunk);
+          bytesWritten += chunk.length;
+          buf = buf.slice(buf.length - keep);
+        }
+
+        if (!(await readMore())) {
+          // EOF - write remaining
+          if (buf.length > 0) {
+            await fileHandle.write(buf);
+            bytesWritten += buf.length;
+          }
+          await fileHandle.close();
+          result.file = { path: writePath, name: fileName, size: bytesWritten, type: fieldType };
+          break;
+        }
+      }
+    } else {
+      // Regular field - accumulate in memory (small)
+      fieldBuf = "";
+      while (true) {
+        const bIdx = indexOf(buf, boundaryBytes);
+        const eIdx = indexOf(buf, endBoundaryBytes);
+        let cutIdx = -1;
+        if (bIdx >= 0) cutIdx = bIdx;
+        if (eIdx >= 0 && (cutIdx < 0 || eIdx < cutIdx)) cutIdx = eIdx;
+
+        if (cutIdx >= 0) {
+          fieldBuf += decoder.decode(buf.slice(0, cutIdx > 1 ? cutIdx - 2 : 0));
+          const isEnd = eIdx >= 0 && (cutIdx === eIdx);
+          buf = buf.slice(cutIdx + (isEnd ? endBoundaryBytes.length : boundaryBytes.length));
+          break;
+        }
+        if (!(await readMore())) {
+          fieldBuf += decoder.decode(buf);
+          break;
+        }
+        // Keep boundary search window
+        const keep = boundaryBytes.length + 2;
+        if (buf.length > keep) {
+          fieldBuf += decoder.decode(buf.slice(0, buf.length - keep));
+          buf = buf.slice(buf.length - keep);
+        }
+      }
+      result.fields[fieldName] = fieldBuf;
+    }
+
+    // Check if we hit the final boundary
+    if (indexOf(buf, endBoundaryBytes) >= 0 || buf.length === 0) break;
+  }
+
+  return result;
+}
 
 // Check available disk space
 async function getDiskSpace(): Promise<{ free: number; total: number }> {
@@ -556,31 +741,41 @@ const server = Bun.serve({
         const disk = await getDiskSpace();
         if (disk.free < MIN_DISK_SPACE) {
           console.error(`[upload] Not enough disk space: ${(disk.free / 1024 / 1024).toFixed(0)}MB free`);
-          return Response.json({ error: "Not enough storage space on server. Please contact admin." }, { 
+          return Response.json({ error: "Not enough storage space on server." }, { 
             status: 507,
             headers: { ...corsHeaders, "Content-Type": "application/json" }
           });
         }
 
-        const formData = await req.formData();
-        const videoFile = formData.get("video") as File;
-        const title = formData.get("title") as string || "";
-        const description = formData.get("description") as string || "";
+        // Generate unique filename and temp path for streaming
+        const tempFilename = `upload-${Date.now()}-${Math.random().toString(36).substring(7)}.tmp`;
+        const tempPath = `./storage/temp/${tempFilename}`;
+
+        // Parse multipart and stream file directly to disk (no memory buffering)
+        let parsed;
+        try {
+          parsed = await parseMultipartStream(req, tempPath);
+        } catch (e: any) {
+          // Clean up temp file on parse error
+          await unlink(tempPath).catch(() => {});
+          if (e.message === "File too large") {
+            return Response.json({ error: `File too large. Max is ${(MAX_FILE_SIZE / 1024 / 1024).toFixed(0)}MB.` }, { 
+              status: 413,
+              headers: { ...corsHeaders, "Content-Type": "application/json" }
+            });
+          }
+          throw e;
+        }
+
+        const videoFile = parsed.file;
+        const title = parsed.fields.title || "";
+        const description = parsed.fields.description || "";
 
         // Validate file exists
         if (!videoFile || videoFile.size === 0) {
+          await unlink(tempPath).catch(() => {});
           return Response.json({ error: "No video file provided" }, { 
             status: 400,
-            headers: { ...corsHeaders, "Content-Type": "application/json" }
-          });
-        }
-
-        // Validate file size
-        if (videoFile.size > MAX_FILE_SIZE) {
-          const sizeMB = (videoFile.size / 1024 / 1024).toFixed(0);
-          const maxMB = (MAX_FILE_SIZE / 1024 / 1024).toFixed(0);
-          return Response.json({ error: `File too large (${sizeMB}MB). Max is ${maxMB}MB.` }, { 
-            status: 413,
             headers: { ...corsHeaders, "Content-Type": "application/json" }
           });
         }
@@ -588,6 +783,7 @@ const server = Bun.serve({
         // Validate file type by extension
         const originalExt = (extname(videoFile.name) || "").replace(".", "").toLowerCase();
         if (!ALLOWED_EXTENSIONS.has(originalExt)) {
+          await unlink(tempPath).catch(() => {});
           return Response.json({ error: `Unsupported file type (.${originalExt}). Supported: ${[...ALLOWED_EXTENSIONS].join(", ")}` }, { 
             status: 400,
             headers: { ...corsHeaders, "Content-Type": "application/json" }
@@ -595,30 +791,19 @@ const server = Bun.serve({
         }
 
         // Validate MIME type
-        const mimeType = videoFile.type || "";
-        if (mimeType && !ALLOWED_MIME_PREFIXES.some(prefix => mimeType.startsWith(prefix))) {
-          return Response.json({ error: `Invalid file type: ${mimeType}. Only video files are allowed.` }, { 
+        if (videoFile.type && !ALLOWED_MIME_PREFIXES.some(prefix => videoFile.type.startsWith(prefix))) {
+          await unlink(tempPath).catch(() => {});
+          return Response.json({ error: `Invalid file type: ${videoFile.type}. Only video files are allowed.` }, { 
             status: 400,
             headers: { ...corsHeaders, "Content-Type": "application/json" }
           });
         }
 
-        // Generate unique filename
+        // Move temp file to final location with correct extension
         const filename = `${Date.now()}-${Math.random().toString(36).substring(7)}.${originalExt}`;
         const filePath = `./storage/videos/${filename}`;
-        
-        // Write file to disk directly (avoids loading entire file into memory)
-        await Bun.write(filePath, videoFile.stream());
-        
-        // Verify file was written correctly
-        const writtenStat = await stat(filePath);
-        if (writtenStat.size === 0) {
-          await unlink(filePath).catch(() => {});
-          return Response.json({ error: "File write failed - empty upload" }, { 
-            status: 500,
-            headers: { ...corsHeaders, "Content-Type": "application/json" }
-          });
-        }
+        const { renameSync } = await import("fs");
+        renameSync(tempPath, filePath);
 
         // Save to database
         const result = db.run(
@@ -628,7 +813,7 @@ const server = Bun.serve({
 
         console.log(`[upload] Video uploaded: ${filename} (${(videoFile.size / 1024 / 1024).toFixed(1)}MB) by ${user.username}`);
 
-        // Queue video for FFmpeg processing (thumbnail + metadata)
+        // Queue video for FFmpeg processing (thumbnail + metadata + compression)
         const videoId = Number(result.lastInsertRowid);
         queueVideoProcessing(videoId, `./storage/videos/${filename}`);
 

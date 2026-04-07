@@ -1,0 +1,10 @@
+{
+  "name": "moments",
+  "version": "1.0.0",
+  "description": "Family video sharing app - TikTok style",
+  "scripts": {
+    "start": "bun run server.ts",
+    "dev": "bun --watch run server.ts"
+  },
+  "dependencies": {}
+}

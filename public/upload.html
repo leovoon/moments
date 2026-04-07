@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Moments - Upload Video</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="upload-page">
+    <header class="header">
+      <h1>Upload</h1>
+      <nav class="header-nav">
+        <a href="/">Back to Feed</a>
+      </nav>
+    </header>
+
+    <div class="upload-container">
+      <form id="upload-form">
+        <div class="upload-area" id="upload-area">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <path d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/>
+          </svg>
+          <p>Tap to select a video</p>
+          <p class="hint">or drag and drop</p>
+          <p class="hint">MP4, MOV, WebM supported</p>
+          <input type="file" id="file-input" name="video" accept="video/*" capture="environment">
+        </div>
+
+        <div class="selected-file" id="selected-file" style="display: none;">
+          <div class="name" id="file-name"></div>
+          <div class="size" id="file-size"></div>
+          <button type="button" onclick="clearFile()" style="margin-top: 8px; background: none; border: 1px solid rgba(255,255,255,0.2); color: #fff; padding: 4px 12px; border-radius: 4px; cursor: pointer; font-size: 12px;">Remove</button>
+        </div>
+
+        <div class="form-group">
+          <label for="title">Title (optional)</label>
+          <input type="text" id="title" name="title" placeholder="Add a title for this moment">
+        </div>
+
+        <div class="form-group">
+          <label for="description">Description (optional)</label>
+          <input type="text" id="description" name="description" placeholder="What's happening in this video?">
+        </div>
+
+        <button type="submit" class="btn btn-primary" id="submit-btn" disabled>Upload Video</button>
+        
+        <div class="progress-bar" id="progress-bar" style="display: none;">
+          <div class="fill" id="progress-fill"></div>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script>
+    const uploadArea = document.getElementById('upload-area');
+    const fileInput = document.getElementById('file-input');
+    const selectedFile = document.getElementById('selected-file');
+    const fileName = document.getElementById('file-name');
+    const fileSize = document.getElementById('file-size');
+    const submitBtn = document.getElementById('submit-btn');
+    const uploadForm = document.getElementById('upload-form');
+    const progressBar = document.getElementById('progress-bar');
+    const progressFill = document.getElementById('progress-fill');
+
+    let currentFile = null;
+
+    // Click to select file
+    uploadArea.addEventListener('click', () => fileInput.click());
+
+    // File input change
+    fileInput.addEventListener('change', (e) => {
+      if (e.target.files.length > 0) {
+        handleFile(e.target.files[0]);
+      }
+    });
+
+    // Drag and drop
+    uploadArea.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      uploadArea.classList.add('dragover');
+    });
+
+    uploadArea.addEventListener('dragleave', () => {
+      uploadArea.classList.remove('dragover');
+    });
+
+    uploadArea.addEventListener('drop', (e) => {
+      e.preventDefault();
+      uploadArea.classList.remove('dragover');
+      
+      const files = e.dataTransfer.files;
+      if (files.length > 0) {
+        const file = files[0];
+        if (file.type.startsWith('video/')) {
+          handleFile(file);
+        } else {
+          alert('Please select a video file');
+        }
+      }
+    });
+
+    function handleFile(file) {
+      currentFile = file;
+      
+      fileName.textContent = file.name;
+      fileSize.textContent = formatFileSize(file.size);
+      
+      uploadArea.style.display = 'none';
+      selectedFile.style.display = 'block';
+      submitBtn.disabled = false;
+    }
+
+    function clearFile() {
+      currentFile = null;
+      fileInput.value = '';
+      
+      uploadArea.style.display = 'block';
+      selectedFile.style.display = 'none';
+      submitBtn.disabled = true;
+    }
+
+    function formatFileSize(bytes) {
+      if (bytes < 1024) return bytes + ' B';
+      if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+      if (bytes < 1073741824) return (bytes / 1048576).toFixed(1) + ' MB';
+      return (bytes / 1073741824).toFixed(1) + ' GB';
+    }
+
+    // Form submission
+    uploadForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      
+      if (!currentFile) {
+        alert('Please select a video file');
+        return;
+      }
+
+      const formData = new FormData();
+      formData.append('video', currentFile);
+      formData.append('title', document.getElementById('title').value);
+      formData.append('description', document.getElementById('description').value);
+
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Uploading...';
+      progressBar.style.display = 'block';
+
+      try {
+        const xhr = new XMLHttpRequest();
+        
+        xhr.upload.addEventListener('progress', (e) => {
+          if (e.lengthComputable) {
+            const percent = (e.loaded / e.total) * 100;
+            progressFill.style.width = percent + '%';
+          }
+        });
+
+        xhr.addEventListener('load', () => {
+          if (xhr.status === 200) {
+            const response = JSON.parse(xhr.responseText);
+            alert('Video uploaded successfully!');
+            window.location.href = '/';
+          } else {
+            alert('Upload failed: ' + xhr.statusText);
+            resetForm();
+          }
+        });
+
+        xhr.addEventListener('error', () => {
+          alert('Upload failed. Please try again.');
+          resetForm();
+        });
+
+        xhr.open('POST', '/api/upload');
+        xhr.send(formData);
+        
+      } catch (error) {
+        console.error('Upload error:', error);
+        alert('Upload failed. Please try again.');
+        resetForm();
+      }
+    });
+
+    function resetForm() {
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Upload Video';
+      progressBar.style.display = 'none';
+      progressFill.style.width = '0%';
+    }
+  </script>
+</body>
+</html>

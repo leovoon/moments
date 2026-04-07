@@ -1,0 +1,24 @@
+# Dependencies
+node_modules/
+
+# Database
+*.db
+*.db-journal
+
+# Storage
+storage/videos/*
+!storage/videos/.gitkeep
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build
+dist/
+
+# Lock file (optional, regenerate)
+bun.lockb

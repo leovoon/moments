@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  moments:
+    build: .
+    container_name: moments
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - moments-data:/app/storage
+    environment:
+      - BUN_ENV=production
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  moments-data:
+    driver: local

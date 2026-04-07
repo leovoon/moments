@@ -86,26 +86,38 @@
             playsinline 
             loop
             preload="metadata"
+            onclick="togglePlay(${index})"
           ></video>
           
           <div class="video-info">
             <div class="username">@${video.username}</div>
-            ${video.title ? `<div class="title">${escapeHtml(video.title)}</div>` : ''}
+            ${video.title ? `<div class="title">${escapeHtml(video.title)}</div>` : ''} 
             ${video.description ? `<div class="description">${escapeHtml(video.description)}</div>` : ''}
             <div class="date">${formatDate(video.created_at)}</div>
           </div>
           
           <div class="video-actions">
-            <button onclick="togglePlay(${index})" title="Play/Pause">
-              <svg viewBox="0 0 24 24" fill="white" width="20" height="20" class="play-icon">
+            <button onclick="togglePlay(${index})" title="Play/Pause" class="play-btn">
+              <svg viewBox="0 0 24 24" fill="white" width="20" height="20" class="icon-pause">
+                <path d="M6 4h4v16H6zM14 4h4v16h-4z"/>
+              </svg>
+              <svg viewBox="0 0 24 24" fill="white" width="20" height="20" class="icon-play" style="display:none">
                 <path d="M8 5v14l11-7z"/>
               </svg>
             </button>
-            <button onclick="deleteVideo(${video.id}, ${index})" title="Delete">
+            <button onclick="startDelete(${video.id}, ${index})" title="Delete" class="delete-btn">
               <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" width="20" height="20">
                 <path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
               </svg>
             </button>
+          </div>
+
+          <div class="delete-confirm" id="delete-confirm-${video.id}" style="display:none">
+            <p>Delete this video?</p>
+            <div class="delete-confirm-actions">
+              <button onclick="confirmDelete(${video.id}, ${index})" class="btn-delete-yes">Delete</button>
+              <button onclick="cancelDelete(${video.id})" class="btn-delete-no">Cancel</button>
+            </div>
           </div>
         </div>
       `).join('');
@@ -121,22 +133,26 @@
       const observer = new IntersectionObserver((entries) => {
         entries.forEach(entry => {
           const video = entry.target;
+          const item = video.closest('.video-item');
+          const playBtn = item.querySelector('.play-btn');
+          const iconPlay = playBtn.querySelector('.icon-play');
+          const iconPause = playBtn.querySelector('.icon-pause');
+
           if (entry.isIntersecting && entry.intersectionRatio >= 0.5) {
-            // Play visible video
             video.play().catch(() => {});
             video.muted = false;
+            iconPlay.style.display = 'none';
+            iconPause.style.display = 'block';
             
-            // Update current index
-            const item = video.closest('.video-item');
             currentVideoIndex = parseInt(item.dataset.index);
             
-            // Hide scroll hint after first video
             if (currentVideoIndex === 0) {
               scrollHint.style.display = 'none';
             }
           } else {
-            // Pause hidden videos
             video.pause();
+            iconPlay.style.display = 'block';
+            iconPause.style.display = 'none';
           }
         });
       }, { threshold: 0.5 });
@@ -146,17 +162,31 @@
 
     function togglePlay(index) {
       const video = document.querySelectorAll('video')[index];
+      const item = video.closest('.video-item');
+      const playBtn = item.querySelector('.play-btn');
+      const iconPlay = playBtn.querySelector('.icon-play');
+      const iconPause = playBtn.querySelector('.icon-pause');
+
       if (video.paused) {
         video.play();
+        iconPlay.style.display = 'none';
+        iconPause.style.display = 'block';
       } else {
         video.pause();
+        iconPlay.style.display = 'block';
+        iconPause.style.display = 'none';
       }
     }
 
-    async function deleteVideo(videoId, index) {
-      if (!confirm('Are you sure you want to delete this video?')) {
-        return;
-      }
+    function startDelete(videoId, index) {
+      document.getElementById(`delete-confirm-${videoId}`).style.display = 'flex';
+    }
+
+    function cancelDelete(videoId) {
+      document.getElementById(`delete-confirm-${videoId}`).style.display = 'none';
+    }
+
+    async function confirmDelete(videoId, index) {
       
       try {
         const response = await fetch(`/api/videos/${videoId}`, {

@@ -81,11 +81,11 @@
       feed.innerHTML = videos.map((video, index) => `
         <div class="video-item" data-index="${index}">
           <video 
-            src="/videos/${video.id}" 
-            ${video.thumbnail ? `poster="/thumbnails/${video.id}.jpg"` : ''}
+            data-src="/videos/${video.id}"
+            ${video.thumbnail ? `data-poster="/thumbnails/${video.id}.jpg"` : ''}
             playsinline 
             loop
-            preload="metadata"
+            preload="none"
             onclick="togglePlay(${index})"
           ></video>
           
@@ -128,11 +128,33 @@
     function setupAutoPlay() {
       const videoElements = document.querySelectorAll('video');
       
-      // Pause all videos first
-      videoElements.forEach(video => video.pause());
-      
-      // Intersection Observer for auto-play
-      const observer = new IntersectionObserver((entries) => {
+      // Lazy load: load src/poster when near viewport, unload when far
+      const lazyObserver = new IntersectionObserver((entries) => {
+        entries.forEach(entry => {
+          const video = entry.target;
+          const dataSrc = video.dataset.src;
+          const dataPoster = video.dataset.poster;
+
+          if (entry.isIntersecting || entry.intersectionRatio > 0) {
+            // Near viewport - load if not loaded
+            if (dataSrc && !video.src) {
+              video.src = dataSrc;
+              video.poster = dataPoster || '';
+              video.load();
+            }
+          } else if (!entry.isIntersecting && entry.intersectionRatio === 0) {
+            // Far from viewport (fully out of view) - unload to free memory
+            if (video.src && video.readyState > 0) {
+              video.pause();
+              video.removeAttribute('src');
+              video.load(); // release resources
+            }
+          }
+        });
+      }, { rootMargin: '100% 0px', threshold: 0 });
+
+      // Auto-play observer
+      const playObserver = new IntersectionObserver((entries) => {
         entries.forEach(entry => {
           const video = entry.target;
           const item = video.closest('.video-item');
@@ -141,6 +163,12 @@
           const iconPause = playBtn.querySelector('.icon-pause');
 
           if (entry.isIntersecting && entry.intersectionRatio >= 0.5) {
+            // Ensure video is loaded before playing
+            if (!video.src && video.dataset.src) {
+              video.src = video.dataset.src;
+              video.poster = video.dataset.poster || '';
+              video.load();
+            }
             video.play().catch(() => {});
             video.muted = false;
             iconPlay.style.display = 'none';
@@ -159,7 +187,10 @@
         });
       }, { threshold: 0.5 });
       
-      videoElements.forEach(video => observer.observe(video));
+      videoElements.forEach(video => {
+        lazyObserver.observe(video);
+        playObserver.observe(video);
+      });
     }
 
     function togglePlay(index) {
@@ -169,8 +200,15 @@
       const iconPlay = playBtn.querySelector('.icon-play');
       const iconPause = playBtn.querySelector('.icon-pause');
 
+      // Ensure video is loaded
+      if (!video.src && video.dataset.src) {
+        video.src = video.dataset.src;
+        video.poster = video.dataset.poster || '';
+        video.load();
+      }
+
       if (video.paused) {
-        video.play();
+        video.play().catch(() => {});
         iconPlay.style.display = 'none';
         iconPause.style.display = 'block';
       } else {

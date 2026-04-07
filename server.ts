@@ -751,11 +751,13 @@ const server = Bun.serve({
         // Generate unique filename and temp path for streaming
         const tempFilename = `upload-${Date.now()}-${Math.random().toString(36).substring(7)}.tmp`;
         const tempPath = `./storage/temp/${tempFilename}`;
+        console.log(`[upload] Starting upload to ${tempPath}`);
 
         // Parse multipart and stream file directly to disk (no memory buffering)
         let parsed;
         try {
           parsed = await parseMultipartStream(req, tempPath);
+          console.log(`[upload] Parse complete, file: ${parsed.file?.name}, size: ${parsed.file?.size}, title: ${parsed.fields.title}`);
         } catch (e: any) {
           // Clean up temp file on parse error
           await unlink(tempPath).catch(() => {});

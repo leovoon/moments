@@ -535,6 +535,7 @@ async function serveStatic(path: string): Promise<Response | null> {
 const server = Bun.serve({
   port: 3000,
   idleTimeout: 255, // 255 seconds max (nginx/proxy default is usually 300s)
+  maxRequestBodySize: 500 * 1024 * 1024, // 500MB - match our app limit
   async fetch(req) {
     const url = new URL(req.url);
     const method = req.method;

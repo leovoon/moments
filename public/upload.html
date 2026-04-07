@@ -213,7 +213,7 @@
           resetForm();
         });
 
-        xhr.timeout = 120000;
+        xhr.timeout = 600000; // 10 minutes for large video uploads
         xhr.open('POST', '/api/upload');
         xhr.send(formData);
         

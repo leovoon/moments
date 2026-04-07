@@ -448,6 +448,25 @@ body {
   margin-bottom: 24px;
 }
 
+/* Upload status messages */
+.upload-status {
+  text-align: center;
+  font-size: 14px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  margin-top: 12px;
+}
+
+.upload-status-error {
+  color: #fc8181;
+  background: rgba(252, 129, 129, 0.1);
+}
+
+.upload-status-success {
+  color: #68d391;
+  background: rgba(104, 211, 145, 0.1);
+}
+
 /* Progress bar */
 .progress-bar {
   height: 4px;

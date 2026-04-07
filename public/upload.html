@@ -62,6 +62,7 @@
 
         <button type="submit" class="btn btn-primary" id="submit-btn" disabled>Upload Video</button>
         
+        <div class="upload-status" id="upload-status" style="display:none"></div>
         <div class="progress-bar" id="progress-bar" style="display: none;">
           <div class="fill" id="progress-fill"></div>
         </div>
@@ -81,6 +82,7 @@
     const uploadForm = document.getElementById('upload-form');
     const progressBar = document.getElementById('progress-bar');
     const progressFill = document.getElementById('progress-fill');
+    const uploadStatus = document.getElementById('upload-status');
 
     let currentFile = null;
 
@@ -186,29 +188,42 @@
 
         xhr.addEventListener('load', () => {
           if (xhr.status === 200) {
-            const response = JSON.parse(xhr.responseText);
-            alert('Video uploaded successfully!');
-            window.location.href = '/';
+            showStatus('Video uploaded!', 'success');
+            setTimeout(() => window.location.href = '/', 800);
           } else {
-            alert('Upload failed: ' + xhr.statusText);
+            const msg = xhr.responseText || xhr.statusText || 'Server error';
+            showStatus('Upload failed: ' + msg, 'error');
             resetForm();
           }
         });
 
         xhr.addEventListener('error', () => {
-          alert('Upload failed. Please try again.');
+          showStatus('Upload failed - server may be restarting. Try again in a moment.', 'error');
           resetForm();
         });
 
+        xhr.addEventListener('timeout', () => {
+          showStatus('Upload timed out. The video may be too large or server is busy.', 'error');
+          resetForm();
+        });
+
+        xhr.timeout = 120000;
         xhr.open('POST', '/api/upload');
         xhr.send(formData);
         
       } catch (error) {
         console.error('Upload error:', error);
-        alert('Upload failed. Please try again.');
+        showStatus('Upload failed. Please try again.', 'error');
         resetForm();
       }
     });
+
+    function showStatus(message, type) {
+      uploadStatus.textContent = message;
+      uploadStatus.style.display = 'block';
+      uploadStatus.className = 'upload-status upload-status-' + type;
+      setTimeout(() => { uploadStatus.style.display = 'none'; }, type === 'success' ? 5000 : 10000);
+    }
 
     function resetForm() {
       submitBtn.disabled = false;

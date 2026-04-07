@@ -494,7 +494,7 @@ body {
 /* Responsive */
 @media (max-width: 768px) {
   .header {
-    padding: 12px;
+    padding: 24px 32px;
   }
   
   .header h1 {
@@ -507,6 +507,7 @@ body {
   }
   
   .video-info {
+    padding: 24px;
     bottom: 60px;
     left: 12px;
     right: 50px;

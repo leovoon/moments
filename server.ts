@@ -42,6 +42,7 @@ async function parseMultipartStream(req: Request, writePath: string): Promise<Mu
   const boundaryBytes = new TextEncoder().encode(`\r\n--${boundary}`);
   const endBoundaryBytes = new TextEncoder().encode(`\r\n--${boundary}--`);
   let buf = new Uint8Array(0);
+  console.log(`[parser] Starting, boundary: ${boundary.substring(0, 20)}...`);
 
   async function readMore(): Promise<boolean> {
     const { done, value } = await reader.read();
@@ -70,6 +71,7 @@ async function parseMultipartStream(req: Request, writePath: string): Promise<Mu
     const idx = indexOf(buf, new TextEncoder().encode(`--${boundary}\r\n`));
     if (idx >= 0) {
       buf = buf.slice(idx + `--${boundary}\r\n`.length);
+      console.log(`[parser] Skipped initial boundary, buf size: ${buf.length}`);
       break;
     }
     if (!hasMore) break;
@@ -86,12 +88,16 @@ async function parseMultipartStream(req: Request, writePath: string): Promise<Mu
         buf = buf.slice(idx + 4);
         break;
       }
-      if (!(await readMore())) break;
+      if (!(await readMore())) {
+        console.log(`[parser] EOF while reading headers`);
+        break;
+      }
     }
 
     // Parse Content-Disposition
     const cdMatch = headerBuf.match(/Content-Disposition:\s*form-data;\s*(.*)/i);
     if (!cdMatch) {
+      console.log(`[parser] No Content-Disposition in: ${headerBuf.substring(0, 50)}...`);
       // Look for next boundary
       const idx = indexOf(buf, boundaryBytes);
       if (idx >= 0) buf = buf.slice(idx + boundaryBytes.length);
@@ -102,6 +108,7 @@ async function parseMultipartStream(req: Request, writePath: string): Promise<Mu
     const fileMatch = cdMatch[1].match(/filename="([^"]+)"/);
     fieldName = nameMatch ? nameMatch[1] : "";
     fileName = fileMatch ? fileMatch[1] : "";
+    console.log(`[parser] Part: field=${fieldName}, file=${fileName || 'none'}`);
 
     const ctMatch = headerBuf.match(/Content-Type:\s*(.+)/i);
     fieldType = ctMatch ? ctMatch[1].trim() : "";
@@ -111,6 +118,7 @@ async function parseMultipartStream(req: Request, writePath: string): Promise<Mu
       // This is a file - stream to disk
       fileHandle = await open(writePath, "w");
       bytesWritten = 0;
+      console.log(`[parser] Starting file write to ${writePath}`);
 
       while (true) {
         const bIdx = indexOf(buf, boundaryBytes);
@@ -131,6 +139,7 @@ async function parseMultipartStream(req: Request, writePath: string): Promise<Mu
           buf = buf.slice(cutIdx + (isEnd ? endBoundaryBytes.length : boundaryBytes.length));
           await fileHandle.close();
           result.file = { path: writePath, name: fileName, size: bytesWritten, type: fieldType };
+          console.log(`[parser] File complete: ${bytesWritten} bytes, isEnd=${isEnd}`);
           break;
         }
 
@@ -152,12 +161,14 @@ async function parseMultipartStream(req: Request, writePath: string): Promise<Mu
 
         if (!(await readMore())) {
           // EOF - write remaining
+          console.log(`[parser] EOF reached, wrote ${bytesWritten} bytes so far`);
           if (buf.length > 0) {
             await fileHandle.write(buf);
             bytesWritten += buf.length;
           }
           await fileHandle.close();
           result.file = { path: writePath, name: fileName, size: bytesWritten, type: fieldType };
+          console.log(`[parser] File complete at EOF: ${bytesWritten} bytes`);
           break;
         }
       }
@@ -195,6 +206,7 @@ async function parseMultipartStream(req: Request, writePath: string): Promise<Mu
     if (indexOf(buf, endBoundaryBytes) >= 0 || buf.length === 0) break;
   }
 
+  console.log(`[parser] Done. Fields: ${Object.keys(result.fields).join(',')}, File: ${result.file?.name || 'none'}`);
   return result;
 }
 

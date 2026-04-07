@@ -82,10 +82,10 @@
         <div class="video-item" data-index="${index}">
           <video 
             src="/videos/${video.id}" 
+            ${video.thumbnail ? `poster="/thumbnails/${video.id}.jpg"` : ''}
             playsinline 
             loop
             preload="metadata"
-            poster=""
           ></video>
           
           <div class="video-info">

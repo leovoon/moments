@@ -1,7 +1,15 @@
 import { Database } from "bun:sqlite";
+import { spawn } from "child_process";
+import { readdir, unlink, mkdir } from "fs/promises";
+import { existsSync } from "fs";
 
 // Initialize database
 const db = new Database("./storage/moments.db");
+
+// Ensure storage directories exist
+await mkdir("./storage/videos", { recursive: true });
+await mkdir("./storage/thumbnails", { recursive: true });
+await mkdir("./storage/temp", { recursive: true });
 
 // Create tables
 db.run(`
@@ -21,10 +29,20 @@ db.run(`
     title TEXT,
     description TEXT,
     user_id INTEGER,
+    thumbnail TEXT,
+    duration REAL,
+    width INTEGER,
+    height INTEGER,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id)
   )
 `);
+
+// Add thumbnail/duration/width/height columns if they don't exist (migration)
+try { db.run("ALTER TABLE videos ADD COLUMN thumbnail TEXT"); } catch {}
+try { db.run("ALTER TABLE videos ADD COLUMN duration REAL"); } catch {}
+try { db.run("ALTER TABLE videos ADD COLUMN width INTEGER"); } catch {}
+try { db.run("ALTER TABLE videos ADD COLUMN height INTEGER"); } catch {}
 
 // Create default admin user if not exists
 const adminExists = db.query("SELECT id FROM users WHERE username = ?").get("admin");
@@ -33,6 +51,161 @@ if (!adminExists) {
   const passwordHash = await Bun.password.hash("family123", "argon2id");
   db.run("INSERT INTO users (username, password_hash) VALUES (?, ?)", ["admin", passwordHash]);
   console.log("Created default admin user: admin / family123");
+}
+
+// --- FFmpeg Video Processing Queue ---
+const processingQueue: Array<{ videoId: number; inputPath: string }> = [];
+let isProcessing = false;
+
+interface VideoMeta {
+  duration?: number;
+  width?: number;
+  height?: number;
+  thumbnail?: string;
+}
+
+// Run FFmpeg and return promise
+function runFfmpeg(args: string[], timeoutMs = 120000): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const proc = spawn("ffmpeg", args, { stdio: ["pipe", "pipe", "pipe"] });
+    const timer = setTimeout(() => {
+      proc.kill("SIGKILL");
+      reject(new Error("FFmpeg timed out"));
+    }, timeoutMs);
+
+    proc.on("close", (code) => {
+      clearTimeout(timer);
+      if (code === 0) resolve();
+      else reject(new Error(`FFmpeg exited with code ${code}`));
+    });
+    proc.on("error", reject);
+    // Consume stderr to prevent buffer fill
+    proc.stderr?.on("data", (d) => console.log("[ffmpeg]", d.toString().trim()));
+  });
+}
+
+// Get video metadata using ffprobe
+function getVideoMeta(inputPath: string): Promise<VideoMeta> {
+  return new Promise((resolve, reject) => {
+    const proc = spawn("ffprobe", [
+      "-v", "quiet",
+      "-print_format", "json",
+      "-show_format",
+      "-show_streams",
+      inputPath,
+    ]);
+    let data = "";
+    proc.stdout.on("data", (d) => (data += d.toString()));
+    proc.on("close", (code) => {
+      if (code !== 0) return reject(new Error("ffprobe failed"));
+      try {
+        const info = JSON.parse(data);
+        const videoStream = info.streams?.find((s: any) => s.codec_type === "video");
+        const duration = parseFloat(info.format?.duration || "0");
+        resolve({
+          duration,
+          width: videoStream?.width,
+          height: videoStream?.height,
+        });
+      } catch {
+        reject(new Error("Failed to parse ffprobe output"));
+      }
+    });
+    proc.on("error", reject);
+  });
+}
+
+// Generate thumbnail from video
+async function generateThumbnail(inputPath: string, videoId: number): Promise<string> {
+  const thumbPath = `./storage/thumbnails/${videoId}.jpg`;
+  // Seek to 1 second (or 10% of duration if shorter), grab 1 frame
+  await runFfmpeg([
+    "-ss", "1",
+    "-i", inputPath,
+    "-vframes", "1",
+    "-q:v", "2",
+    "-vf", "scale=360:-1",
+    "-y",
+    thumbPath,
+  ], 30000);
+  return `${videoId}.jpg`;
+}
+
+// Normalize video to MP4 (H264 + AAC) for web compatibility
+async function normalizeVideo(inputPath: string, outputPath: string): Promise<void> {
+  await runFfmpeg([
+    "-i", inputPath,
+    "-c:v", "libx264",
+    "-preset", "fast",
+    "-crf", "23",
+    "-c:a", "aac",
+    "-b:a", "128k",
+    "-movflags", "+faststart",
+    "-y",
+    outputPath,
+  ]);
+}
+
+// Process a single video from the queue
+async function processVideo(videoId: number, inputPath: string) {
+  const tempDir = "./storage/temp";
+  const normalizedPath = `${tempDir}/${videoId}-normalized.mp4`;
+  
+  try {
+    console.log(`[process] Starting video ${videoId}...`);
+    
+    // 1. Get metadata
+    const meta = await getVideoMeta(inputPath);
+    
+    // 2. Generate thumbnail
+    let thumbnail: string | undefined;
+    try {
+      thumbnail = await generateThumbnail(inputPath, videoId);
+    } catch (e) {
+      console.warn(`[process] Thumbnail failed for ${videoId}:`, e);
+    }
+    
+    // 3. Normalize to MP4 if not already H264/AAC in MP4 container
+    const needsNormalize = !inputPath.endsWith(".mp4");
+    if (needsNormalize) {
+      console.log(`[process] Normalizing video ${videoId}...`);
+      await normalizeVideo(inputPath, normalizedPath);
+      // Replace original with normalized version
+      const { renameSync } = await import("fs");
+      renameSync(normalizedPath, inputPath);
+    }
+    
+    // 4. Update database with metadata
+    db.run(
+      "UPDATE videos SET thumbnail = ?, duration = ?, width = ?, height = ? WHERE id = ?",
+      [thumbnail || null, meta.duration || null, meta.width || null, meta.height || null, videoId]
+    );
+    
+    console.log(`[process] Video ${videoId} processed successfully`);
+  } catch (error) {
+    console.error(`[process] Error processing video ${videoId}:`, error);
+    // Still mark as processed even if failed, to avoid retry loop
+    // Clean up temp files
+    try { if (existsSync(normalizedPath)) await unlink(normalizedPath); } catch {}
+  }
+}
+
+// Queue a video for processing
+function queueVideoProcessing(videoId: number, inputPath: string) {
+  processingQueue.push({ videoId, inputPath });
+  processNextVideo();
+}
+
+// Process next video in queue
+async function processNextVideo() {
+  if (isProcessing || processingQueue.length === 0) return;
+  isProcessing = true;
+  
+  const job = processingQueue.shift()!;
+  await processVideo(job.videoId, job.inputPath);
+  
+  isProcessing = false;
+  processNextVideo();
 }
 
 // Session store (simple in-memory for single server)
@@ -258,6 +431,24 @@ const server = Bun.serve({
       });
     }
 
+    // GET /thumbnails/:id - Serve video thumbnail
+    const thumbMatch = path.match(/^\/thumbnails\/(\d+)\.jpg$/);
+    if (thumbMatch && method === "GET") {
+      const user = checkAuth(req);
+      if (!user) {
+        return new Response("Unauthorized", { status: 401 });
+      }
+
+      const thumbPath = `./storage/thumbnails/${thumbMatch[1]}.jpg`;
+      const file = Bun.file(thumbPath);
+      if (await file.exists()) {
+        return new Response(file, {
+          headers: { "Content-Type": "image/jpeg", "Cache-Control": "public, max-age=86400" },
+        });
+      }
+      return new Response("Not found", { status: 404 });
+    }
+
     // POST /api/upload - Upload video
     if (path === "/api/upload" && method === "POST") {
       const user = checkAuth(req);
@@ -290,6 +481,10 @@ const server = Bun.serve({
         );
 
         console.log(`Uploaded video: ${filename} by ${user.username}`);
+
+        // Queue video for FFmpeg processing (thumbnail + metadata)
+        const videoId = Number(result.lastInsertRowid);
+        queueVideoProcessing(videoId, `./storage/videos/${filename}`);
 
         return new Response(JSON.stringify({ 
           success: true, 
@@ -324,6 +519,13 @@ const server = Bun.serve({
         await Bun.file(`./storage/videos/${video.filename}`).unlink();
       } catch (e) {
         // File might not exist
+      }
+
+      // Delete thumbnail
+      try {
+        await Bun.file(`./storage/thumbnails/${video.id}.jpg`).unlink();
+      } catch (e) {
+        // Thumbnail might not exist
       }
 
       // Delete from database

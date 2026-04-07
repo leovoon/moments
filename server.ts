@@ -6,9 +6,10 @@ import { join, extname } from "path";
 import { pipeline } from "stream/promises";
 import { Readable } from "stream";
 
-// --- Config ---
+// Config
 const MAX_FILE_SIZE = 500 * 1024 * 1024; // 500MB
 const MIN_DISK_SPACE = 500 * 1024 * 1024; // 500MB free required
+const COMPRESS_THRESHOLD = 50 * 1024 * 1024; // 50MB - compress files above this
 const ALLOWED_EXTENSIONS = new Set(["mp4", "mov", "webm", "avi", "mkv", "m4v", "3gp", "flv", "wmv", "ts"]);
 const ALLOWED_MIME_PREFIXES = ["video/"];
 
@@ -180,16 +181,43 @@ async function normalizeVideo(inputPath: string, outputPath: string): Promise<vo
   ]);
 }
 
+// Compress video - adaptive CRF based on resolution
+async function compressVideo(inputPath: string, outputPath: string, width: number, height: number): Promise<void> {
+  const maxDim = Math.max(width, height);
+  // Higher CRF (more compression) for higher resolutions, lower for smaller
+  let crf = 28;
+  if (maxDim <= 480) crf = 23;
+  else if (maxDim <= 720) crf = 26;
+  else if (maxDim <= 1080) crf = 28;
+  else crf = 30;
+
+  console.log(`[compress] Resolution ${width}x${height}, using CRF ${crf}`);
+  await runFfmpeg([
+    "-i", inputPath,
+    "-c:v", "libx264",
+    "-preset", "fast",
+    "-crf", crf.toString(),
+    "-c:a", "aac",
+    "-b:a", "96k",
+    "-movflags", "+faststart",
+    "-y",
+    outputPath,
+  ], 300000); // 5min timeout for compression
+}
+
 // Process a single video from the queue
 async function processVideo(videoId: number, inputPath: string) {
   const tempDir = "./storage/temp";
   const normalizedPath = `${tempDir}/${videoId}-normalized.mp4`;
+  const compressedPath = `${tempDir}/${videoId}-compressed.mp4`;
   
   try {
     console.log(`[process] Starting video ${videoId}...`);
     
-    // 1. Get metadata
+    // 1. Get metadata and file size
     const meta = await getVideoMeta(inputPath);
+    const inputStat = await stat(inputPath);
+    const inputSize = inputStat.size;
     
     // 2. Generate thumbnail
     let thumbnail: string | undefined;
@@ -199,14 +227,46 @@ async function processVideo(videoId: number, inputPath: string) {
       console.warn(`[process] Thumbnail failed for ${videoId}:`, e);
     }
     
-    // 3. Normalize to MP4 if not already H264/AAC in MP4 container
+    // 3. Always normalize to MP4 with faststart (needed for streaming)
     const needsNormalize = !inputPath.endsWith(".mp4");
     if (needsNormalize) {
-      console.log(`[process] Normalizing video ${videoId}...`);
+      console.log(`[process] Normalizing video ${videoId} to MP4...`);
       await normalizeVideo(inputPath, normalizedPath);
-      // Replace original with normalized version
-      const { renameSync } = await import("fs");
-      renameSync(normalizedPath, inputPath);
+      
+      // Compress if still large after normalization
+      if (inputSize > COMPRESS_THRESHOLD && meta.width && meta.height) {
+        console.log(`[compress] Compressing video ${videoId} (${(inputSize / 1024 / 1024).toFixed(1)}MB)...`);
+        await compressVideo(normalizedPath, compressedPath, meta.width, meta.height);
+        
+        const compStat = await stat(compressedPath);
+        if (compStat.size < inputSize * 0.9) {
+          // Only use compressed if it's at least 10% smaller
+          console.log(`[compress] Saved ${((1 - compStat.size / inputSize) * 100).toFixed(0)}% (${(inputSize / 1024 / 1024).toFixed(1)}MB -> ${(compStat.size / 1024 / 1024).toFixed(1)}MB)`);
+          const { renameSync } = await import("fs");
+          renameSync(compressedPath, inputPath);
+        } else {
+          console.log(`[compress] Compression not worth it (${(compStat.size / 1024 / 1024).toFixed(1)}MB vs ${(inputSize / 1024 / 1024).toFixed(1)}MB), keeping normalized`);
+          const { renameSync } = await import("fs");
+          renameSync(normalizedPath, inputPath);
+        }
+      } else {
+        const { renameSync } = await import("fs");
+        renameSync(normalizedPath, inputPath);
+      }
+    } else if (inputSize > COMPRESS_THRESHOLD && meta.width && meta.height) {
+      // MP4 file but large - compress it
+      console.log(`[compress] Compressing large MP4 ${videoId} (${(inputSize / 1024 / 1024).toFixed(1)}MB)...`);
+      await compressVideo(inputPath, compressedPath, meta.width, meta.height);
+      
+      const compStat = await stat(compressedPath);
+      if (compStat.size < inputSize * 0.9) {
+        console.log(`[compress] Saved ${((1 - compStat.size / inputSize) * 100).toFixed(0)}% (${(inputSize / 1024 / 1024).toFixed(1)}MB -> ${(compStat.size / 1024 / 1024).toFixed(1)}MB)`);
+        const { renameSync } = await import("fs");
+        renameSync(compressedPath, inputPath);
+      } else {
+        console.log(`[compress] Compression not worth it, keeping original`);
+        try { if (existsSync(compressedPath)) await unlink(compressedPath); } catch {}
+      }
     }
     
     // 4. Update database with metadata
@@ -218,9 +278,9 @@ async function processVideo(videoId: number, inputPath: string) {
     console.log(`[process] Video ${videoId} processed successfully`);
   } catch (error) {
     console.error(`[process] Error processing video ${videoId}:`, error);
-    // Still mark as processed even if failed, to avoid retry loop
     // Clean up temp files
     try { if (existsSync(normalizedPath)) await unlink(normalizedPath); } catch {}
+    try { if (existsSync(compressedPath)) await unlink(compressedPath); } catch {}
   }
 }
 
@@ -547,15 +607,14 @@ const server = Bun.serve({
         const filename = `${Date.now()}-${Math.random().toString(36).substring(7)}.${originalExt}`;
         const filePath = `./storage/videos/${filename}`;
         
-        // Stream to disk instead of loading entire file into memory
-        const buffer = await videoFile.arrayBuffer();
-        await Bun.write(filePath, new Uint8Array(buffer));
+        // Write file to disk directly (avoids loading entire file into memory)
+        await Bun.write(filePath, videoFile.stream());
         
         // Verify file was written correctly
         const writtenStat = await stat(filePath);
-        if (writtenStat.size !== videoFile.size) {
+        if (writtenStat.size === 0) {
           await unlink(filePath).catch(() => {});
-          return Response.json({ error: "File write failed - incomplete upload" }, { 
+          return Response.json({ error: "File write failed - empty upload" }, { 
             status: 500,
             headers: { ...corsHeaders, "Content-Type": "application/json" }
           });

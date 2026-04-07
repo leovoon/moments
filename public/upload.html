@@ -163,7 +163,7 @@
       return new Promise((resolve, reject) => {
         const video = document.createElement('video');
         video.preload = 'metadata';
-        video.muted = true;
+        // Don't mute - we need to capture audio
         
         video.onloadedmetadata = async () => {
           const canvas = document.createElement('canvas');
@@ -187,8 +187,23 @@
           canvas.width = width;
           canvas.height = height;
           
-          // Set up MediaRecorder with lower bitrate
-          const stream = canvas.captureStream(30);
+          // Capture video from canvas AND audio from video element
+          const videoStream = canvas.captureStream(30);
+          const audioTracks = video.captureStream().getAudioTracks();
+          
+          // Combine video and audio tracks
+          const stream = new MediaStream([
+            ...videoStream.getVideoTracks(),
+            ...audioTracks
+          ]);
+          
+          // Check if audio is present
+          if (audioTracks.length > 0) {
+            console.log('[compress] Audio track found, including in output');
+          } else {
+            console.log('[compress] No audio track in source video');
+          }
+          
           const mediaRecorder = new MediaRecorder(stream, {
             mimeType: 'video/webm;codecs=vp9',
             videoBitsPerSecond: 2500000 // 2.5 Mbps - good quality, smaller size

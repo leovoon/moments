@@ -114,6 +114,8 @@
 
           <div class="delete-confirm" id="delete-confirm-${video.id}" style="display:none">
             <p>Delete this video?</p>
+            <input type="password" id="delete-pin-${video.id}" class="delete-pin" placeholder="Enter passcode" inputmode="numeric" maxlength="4">
+            <p class="delete-pin-error" id="delete-pin-error-${video.id}" style="display:none">Wrong passcode</p>
             <div class="delete-confirm-actions">
               <button onclick="confirmDelete(${video.id}, ${index})" class="btn-delete-yes">Delete</button>
               <button onclick="cancelDelete(${video.id})" class="btn-delete-no">Cancel</button>
@@ -180,6 +182,10 @@
 
     function startDelete(videoId, index) {
       document.getElementById(`delete-confirm-${videoId}`).style.display = 'flex';
+      document.getElementById(`delete-pin-error-${videoId}`).style.display = 'none';
+      const pinInput = document.getElementById(`delete-pin-${videoId}`);
+      pinInput.value = '';
+      setTimeout(() => pinInput.focus(), 100);
     }
 
     function cancelDelete(videoId) {
@@ -187,6 +193,11 @@
     }
 
     async function confirmDelete(videoId, index) {
+      const pin = document.getElementById(`delete-pin-${videoId}`).value;
+      if (pin !== '0909') {
+        document.getElementById(`delete-pin-error-${videoId}`).style.display = 'block';
+        return;
+      }
       
       try {
         const response = await fetch(`/api/videos/${videoId}`, {

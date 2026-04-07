@@ -127,7 +127,32 @@ body {
   color: #fff;
   font-size: 18px;
   font-weight: 600;
-  margin-bottom: 20px;
+  margin-bottom: 16px;
+}
+
+.delete-pin {
+  width: 140px;
+  padding: 10px 16px;
+  border: 1px solid rgba(255,255,255,0.2);
+  border-radius: 8px;
+  background: rgba(255,255,255,0.08);
+  color: #fff;
+  font-size: 20px;
+  text-align: center;
+  letter-spacing: 8px;
+  margin-bottom: 8px;
+  outline: none;
+}
+
+.delete-pin:focus {
+  border-color: rgba(255,255,255,0.4);
+  background: rgba(255,255,255,0.12);
+}
+
+.delete-pin-error {
+  color: #fc8181;
+  font-size: 13px;
+  margin-bottom: 12px;
 }
 
 .delete-confirm-actions {

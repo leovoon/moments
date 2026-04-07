@@ -1,7 +1,41 @@
 import { Database } from "bun:sqlite";
 import { spawn } from "child_process";
-import { readdir, unlink, mkdir } from "fs/promises";
-import { existsSync } from "fs";
+import { readdir, unlink, mkdir, stat, writeFile } from "fs/promises";
+import { existsSync, createWriteStream } from "fs";
+import { join, extname } from "path";
+import { pipeline } from "stream/promises";
+import { Readable } from "stream";
+
+// --- Config ---
+const MAX_FILE_SIZE = 500 * 1024 * 1024; // 500MB
+const MIN_DISK_SPACE = 500 * 1024 * 1024; // 500MB free required
+const ALLOWED_EXTENSIONS = new Set(["mp4", "mov", "webm", "avi", "mkv", "m4v", "3gp", "flv", "wmv", "ts"]);
+const ALLOWED_MIME_PREFIXES = ["video/"];
+
+// Check available disk space
+async function getDiskSpace(): Promise<{ free: number; total: number }> {
+  try {
+    // Run df to get disk space (works in Docker containers)
+    const proc = spawn("df", ["-k", "."]);
+    let output = "";
+    proc.stdout?.on("data", (d) => (output += d.toString()));
+    return new Promise((resolve) => {
+      proc.on("close", () => {
+        const lines = output.trim().split("\n");
+        if (lines.length >= 2) {
+          const parts = lines[1].split(/\s+/);
+          const totalKB = parseInt(parts[1]) || 0;
+          const freeKB = parseInt(parts[3]) || 0;
+          resolve({ free: freeKB * 1024, total: totalKB * 1024 });
+        } else {
+          resolve({ free: Infinity, total: Infinity });
+        }
+      });
+    });
+  } catch {
+    return { free: Infinity, total: Infinity };
+  }
+}
 
 // Initialize database
 const db = new Database("./storage/moments.db");
@@ -458,22 +492,74 @@ const server = Bun.serve({
       }
 
       try {
+        // Check disk space first
+        const disk = await getDiskSpace();
+        if (disk.free < MIN_DISK_SPACE) {
+          console.error(`[upload] Not enough disk space: ${(disk.free / 1024 / 1024).toFixed(0)}MB free`);
+          return Response.json({ error: "Not enough storage space on server. Please contact admin." }, { 
+            status: 507,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+
         const formData = await req.formData();
         const videoFile = formData.get("video") as File;
         const title = formData.get("title") as string || "";
         const description = formData.get("description") as string || "";
 
+        // Validate file exists
         if (!videoFile || videoFile.size === 0) {
-          return new Response("No video file provided", { status: 400 });
+          return Response.json({ error: "No video file provided" }, { 
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+
+        // Validate file size
+        if (videoFile.size > MAX_FILE_SIZE) {
+          const sizeMB = (videoFile.size / 1024 / 1024).toFixed(0);
+          const maxMB = (MAX_FILE_SIZE / 1024 / 1024).toFixed(0);
+          return Response.json({ error: `File too large (${sizeMB}MB). Max is ${maxMB}MB.` }, { 
+            status: 413,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+
+        // Validate file type by extension
+        const originalExt = (extname(videoFile.name) || "").replace(".", "").toLowerCase();
+        if (!ALLOWED_EXTENSIONS.has(originalExt)) {
+          return Response.json({ error: `Unsupported file type (.${originalExt}). Supported: ${[...ALLOWED_EXTENSIONS].join(", ")}` }, { 
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+
+        // Validate MIME type
+        const mimeType = videoFile.type || "";
+        if (mimeType && !ALLOWED_MIME_PREFIXES.some(prefix => mimeType.startsWith(prefix))) {
+          return Response.json({ error: `Invalid file type: ${mimeType}. Only video files are allowed.` }, { 
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
         }
 
         // Generate unique filename
-        const ext = videoFile.name.split(".").pop() || "mp4";
-        const filename = `${Date.now()}-${Math.random().toString(36).substring(7)}.${ext}`;
+        const filename = `${Date.now()}-${Math.random().toString(36).substring(7)}.${originalExt}`;
+        const filePath = `./storage/videos/${filename}`;
         
-        // Save video file
+        // Stream to disk instead of loading entire file into memory
         const buffer = await videoFile.arrayBuffer();
-        await Bun.write(`./storage/videos/${filename}`, buffer);
+        await Bun.write(filePath, new Uint8Array(buffer));
+        
+        // Verify file was written correctly
+        const writtenStat = await stat(filePath);
+        if (writtenStat.size !== videoFile.size) {
+          await unlink(filePath).catch(() => {});
+          return Response.json({ error: "File write failed - incomplete upload" }, { 
+            status: 500,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
 
         // Save to database
         const result = db.run(
@@ -481,7 +567,7 @@ const server = Bun.serve({
           [filename, videoFile.name, title, description, user.userId]
         );
 
-        console.log(`Uploaded video: ${filename} by ${user.username}`);
+        console.log(`[upload] Video uploaded: ${filename} (${(videoFile.size / 1024 / 1024).toFixed(1)}MB) by ${user.username}`);
 
         // Queue video for FFmpeg processing (thumbnail + metadata)
         const videoId = Number(result.lastInsertRowid);
@@ -495,8 +581,11 @@ const server = Bun.serve({
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       } catch (error) {
-        console.error("Upload error:", error);
-        return new Response("Upload failed", { status: 500 });
+        console.error("[upload] Upload error:", error);
+        return Response.json({ error: "Upload failed. Please try again." }, { 
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
       }
     }
 

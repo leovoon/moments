@@ -191,7 +191,13 @@
             showStatus('Video uploaded!', 'success');
             setTimeout(() => window.location.href = '/', 800);
           } else {
-            const msg = xhr.responseText || xhr.statusText || 'Server error';
+            let msg = 'Server error';
+            try {
+              const json = JSON.parse(xhr.responseText);
+              msg = json.error || xhr.statusText || msg;
+            } catch {
+              msg = xhr.statusText || msg;
+            }
             showStatus('Upload failed: ' + msg, 'error');
             resetForm();
           }

@@ -168,9 +168,9 @@
       }
 
       const formData = new FormData();
-      formData.append('video', currentFile);
       formData.append('title', document.getElementById('title').value);
       formData.append('description', document.getElementById('description').value);
+      formData.append('video', currentFile);
 
       submitBtn.disabled = true;
       submitBtn.textContent = 'Uploading...';

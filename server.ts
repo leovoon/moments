@@ -66,18 +66,35 @@ async function parseMultipartStream(req: Request, writePath: string): Promise<Mu
   }
 
   // Skip initial boundary
+  let eof = false;
   while (true) {
     const hasMore = await readMore();
+    if (!hasMore) {
+      console.log(`[parser] EOF during initial boundary skip, buf size: ${buf.length}`);
+      eof = true;
+      break;
+    }
     const idx = indexOf(buf, new TextEncoder().encode(`--${boundary}\r\n`));
     if (idx >= 0) {
       buf = buf.slice(idx + `--${boundary}\r\n`.length);
       console.log(`[parser] Skipped initial boundary, buf size: ${buf.length}`);
       break;
     }
-    if (!hasMore) break;
+  }
+
+  // If EOF before finding initial boundary, return empty result
+  if (eof && buf.length === 0) {
+    console.log(`[parser] Empty request body, returning empty result`);
+    return result;
   }
 
   while (true) {
+    // Check for EOF
+    if (eof && buf.length === 0) {
+      console.log(`[parser] EOF and empty buffer, exiting main loop`);
+      break;
+    }
+
     // Read headers
     headerBuf = "";
     currentHeaders = {};
@@ -89,7 +106,8 @@ async function parseMultipartStream(req: Request, writePath: string): Promise<Mu
         break;
       }
       if (!(await readMore())) {
-        console.log(`[parser] EOF while reading headers`);
+        console.log(`[parser] EOF while reading headers, headerBuf: '${headerBuf.substring(0, 50)}'`);
+        eof = true;
         break;
       }
     }
@@ -97,8 +115,9 @@ async function parseMultipartStream(req: Request, writePath: string): Promise<Mu
     // Parse Content-Disposition
     const cdMatch = headerBuf.match(/Content-Disposition:\s*form-data;\s*(.*)/i);
     if (!cdMatch) {
-      console.log(`[parser] No Content-Disposition in: ${headerBuf.substring(0, 50)}...`);
-      // Look for next boundary
+      console.log(`[parser] No Content-Disposition in: '${headerBuf.substring(0, 50)}'`);
+      // Look for next boundary or exit if EOF
+      if (eof) break;
       const idx = indexOf(buf, boundaryBytes);
       if (idx >= 0) buf = buf.slice(idx + boundaryBytes.length);
       continue;
@@ -748,6 +767,11 @@ const server = Bun.serve({
       if (!user) {
         return new Response("Unauthorized", { status: 401 });
       }
+
+      // Log request details for debugging
+      console.log(`[upload] Request content-length: ${req.headers.get("content-length")}`);
+      console.log(`[upload] Request content-type: ${(req.headers.get("content-type") || "").substring(0, 100)}`);
+      console.log(`[upload] Request body null: ${req.body === null}`);
 
       try {
         // Check disk space first

@@ -27,6 +27,23 @@
           <input type="file" id="file-input" name="video" accept="video/*">
         </div>
 
+        <div class="upload-buttons" id="upload-buttons">
+          <button type="button" class="btn-secondary" onclick="document.getElementById('file-input').click()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20">
+              <path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/>
+            </svg>
+            Choose File
+          </button>
+          <button type="button" class="btn-secondary" onclick="document.getElementById('camera-input').click()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20">
+              <path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/>
+              <circle cx="12" cy="13" r="4"/>
+            </svg>
+            Record Video
+          </button>
+          <input type="file" id="camera-input" accept="video/*" capture="environment" style="display:none">
+        </div>
+
         <div class="selected-file" id="selected-file" style="display: none;">
           <div class="name" id="file-name"></div>
           <div class="size" id="file-size"></div>
@@ -54,7 +71,9 @@
 
   <script>
     const uploadArea = document.getElementById('upload-area');
+    const uploadButtons = document.getElementById('upload-buttons');
     const fileInput = document.getElementById('file-input');
+    const cameraInput = document.getElementById('camera-input');
     const selectedFile = document.getElementById('selected-file');
     const fileName = document.getElementById('file-name');
     const fileSize = document.getElementById('file-size');
@@ -70,6 +89,13 @@
 
     // File input change
     fileInput.addEventListener('change', (e) => {
+      if (e.target.files.length > 0) {
+        handleFile(e.target.files[0]);
+      }
+    });
+
+    // Camera input change
+    cameraInput.addEventListener('change', (e) => {
       if (e.target.files.length > 0) {
         handleFile(e.target.files[0]);
       }
@@ -107,6 +133,7 @@
       fileSize.textContent = formatFileSize(file.size);
       
       uploadArea.style.display = 'none';
+      uploadButtons.style.display = 'none';
       selectedFile.style.display = 'block';
       submitBtn.disabled = false;
     }
@@ -114,8 +141,10 @@
     function clearFile() {
       currentFile = null;
       fileInput.value = '';
+      cameraInput.value = '';
       
       uploadArea.style.display = 'block';
+      uploadButtons.style.display = 'flex';
       selectedFile.style.display = 'none';
       submitBtn.disabled = true;
     }

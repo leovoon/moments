@@ -10,13 +10,13 @@ body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
   background: #000;
   color: #fff;
-  min-height: 100vh;
+  min-height: 100dvh;
   overflow-x: hidden;
 }
 
 /* Video Feed - TikTok Style */
 .video-feed {
-  height: 100vh;
+  height: 100dvh;
   overflow-y: scroll;
   scroll-snap-type: y mandatory;
   scrollbar-width: none;
@@ -27,7 +27,7 @@ body {
 }
 
 .video-item {
-  height: 100vh;
+  height: 100dvh;
   scroll-snap-align: start;
   scroll-snap-stop: always;
   position: relative;
@@ -38,7 +38,7 @@ body {
 }
 
 .video-item video {
-  max-height: 100vh;
+  max-height: 100dvh;
   max-width: 100%;
   width: auto;
   height: auto;
@@ -204,7 +204,7 @@ body {
 
 /* Login Page */
 .login-page {
-  min-height: 100vh;
+  min-height: 100dvh;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -289,7 +289,7 @@ body {
 
 /* Upload Page */
 .upload-page {
-  min-height: 100vh;
+  min-height: 100dvh;
   background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
   padding: 20px;
 }
@@ -401,7 +401,7 @@ body {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  height: 100vh;
+  height: 100dvh;
   text-align: center;
   padding: 40px;
 }

@@ -549,11 +549,6 @@ const server = Bun.serve({
         return new Response("Unauthorized", { status: 401 });
       }
 
-      // Log request details for debugging
-      console.log(`[upload] Request content-length: ${req.headers.get("content-length")}`);
-      console.log(`[upload] Request content-type: ${(req.headers.get("content-type") || "").substring(0, 100)}`);
-      console.log(`[upload] Request body null: ${req.body === null}`);
-
       try {
         // Check disk space first
         const disk = await getDiskSpace();
@@ -565,37 +560,26 @@ const server = Bun.serve({
           });
         }
 
-        // Generate unique filename and temp path for streaming
-        const tempFilename = `upload-${Date.now()}-${Math.random().toString(36).substring(7)}.tmp`;
-        const tempPath = `./storage/temp/${tempFilename}`;
-        console.log(`[upload] Starting upload to ${tempPath}`);
-
-        // Parse multipart and stream file directly to disk (no memory buffering)
-        let parsed;
-        try {
-          parsed = await parseMultipartStream(req, tempPath);
-          console.log(`[upload] Parse complete, file: ${parsed.file?.name}, size: ${parsed.file?.size}, title: ${parsed.fields.title}`);
-        } catch (e: any) {
-          // Clean up temp file on parse error
-          await unlink(tempPath).catch(() => {});
-          if (e.message === "File too large") {
-            return Response.json({ error: `File too large. Max is ${(MAX_FILE_SIZE / 1024 / 1024).toFixed(0)}MB.` }, { 
-              status: 413,
-              headers: { ...corsHeaders, "Content-Type": "application/json" }
-            });
-          }
-          throw e;
-        }
-
-        const videoFile = parsed.file;
-        const title = parsed.fields.title || "";
-        const description = parsed.fields.description || "";
+        // Parse form data using Bun's native multipart handler
+        const formData = await req.formData();
+        const videoFile = formData.get("video") as File | null;
+        const title = formData.get("title")?.toString() || "";
+        const description = formData.get("description")?.toString() || "";
 
         // Validate file exists
         if (!videoFile || videoFile.size === 0) {
-          await unlink(tempPath).catch(() => {});
           return Response.json({ error: "No video file provided" }, { 
             status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+
+        console.log(`[upload] Received: ${videoFile.name}, ${(videoFile.size / 1024 / 1024).toFixed(1)}MB, title: ${title}`);
+
+        // Validate file size
+        if (videoFile.size > MAX_FILE_SIZE) {
+          return Response.json({ error: `File too large. Max is ${(MAX_FILE_SIZE / 1024 / 1024).toFixed(0)}MB.` }, { 
+            status: 413,
             headers: { ...corsHeaders, "Content-Type": "application/json" }
           });
         }
@@ -603,7 +587,6 @@ const server = Bun.serve({
         // Validate file type by extension
         const originalExt = (extname(videoFile.name) || "").replace(".", "").toLowerCase();
         if (!ALLOWED_EXTENSIONS.has(originalExt)) {
-          await unlink(tempPath).catch(() => {});
           return Response.json({ error: `Unsupported file type (.${originalExt}). Supported: ${[...ALLOWED_EXTENSIONS].join(", ")}` }, { 
             status: 400,
             headers: { ...corsHeaders, "Content-Type": "application/json" }
@@ -612,18 +595,18 @@ const server = Bun.serve({
 
         // Validate MIME type
         if (videoFile.type && !ALLOWED_MIME_PREFIXES.some(prefix => videoFile.type.startsWith(prefix))) {
-          await unlink(tempPath).catch(() => {});
           return Response.json({ error: `Invalid file type: ${videoFile.type}. Only video files are allowed.` }, { 
             status: 400,
             headers: { ...corsHeaders, "Content-Type": "application/json" }
           });
         }
 
-        // Move temp file to final location with correct extension
+        // Generate unique filename and save using Bun.write()
         const filename = `${Date.now()}-${Math.random().toString(36).substring(7)}.${originalExt}`;
         const filePath = `./storage/videos/${filename}`;
-        const { renameSync } = await import("fs");
-        renameSync(tempPath, filePath);
+
+        // Bun.write() is optimized - streams to disk efficiently
+        await Bun.write(filePath, videoFile);
 
         // Save to database
         const result = db.run(
@@ -631,11 +614,11 @@ const server = Bun.serve({
           [filename, videoFile.name, title, description, user.userId]
         );
 
-        console.log(`[upload] Video uploaded: ${filename} (${(videoFile.size / 1024 / 1024).toFixed(1)}MB) by ${user.username}`);
+        console.log(`[upload] Video saved: ${filename} (${(videoFile.size / 1024 / 1024).toFixed(1)}MB) by ${user.username}`);
 
         // Queue video for FFmpeg processing (thumbnail + metadata + compression)
         const videoId = Number(result.lastInsertRowid);
-        queueVideoProcessing(videoId, `./storage/videos/${filename}`);
+        queueVideoProcessing(videoId, filePath);
 
         return new Response(JSON.stringify({ 
           success: true, 
@@ -652,7 +635,6 @@ const server = Bun.serve({
         });
       }
     }
-
     // DELETE /api/videos/:id - Delete video
     const deleteMatch = path.match(/^\/api\/videos\/(\d+)$/);
     if (deleteMatch && method === "DELETE") {

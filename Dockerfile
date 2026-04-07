@@ -16,7 +16,7 @@ RUN bun install --frozen-lockfile || bun install
 COPY . .
 
 # Create storage directories
-RUN mkdir -p storage/videos
+RUN mkdir -p storage/videos storage/thumbnails storage/temp
 
 # Expose port
 EXPOSE 3000

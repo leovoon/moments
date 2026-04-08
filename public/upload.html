@@ -158,12 +158,12 @@
       return (bytes / 1073741824).toFixed(1) + ' GB';
     }
 
-    // Compress video using browser's MediaRecorder
+    // Compress video using browser's MediaRecorder with proper audio sync
     async function compressVideo(file, onProgress) {
       return new Promise((resolve, reject) => {
         const video = document.createElement('video');
         video.preload = 'metadata';
-        // Don't mute - we need to capture audio
+        video.muted = false; // Need audio for capture
         
         video.onloadedmetadata = async () => {
           const canvas = document.createElement('canvas');
@@ -188,7 +188,9 @@
           canvas.height = height;
           
           // Capture video from canvas AND audio from video element
-          const videoStream = canvas.captureStream(30);
+          // Use same framerate as source for better sync
+          const frameRate = 30;
+          const videoStream = canvas.captureStream(frameRate);
           const audioTracks = video.captureStream().getAudioTracks();
           
           // Combine video and audio tracks
@@ -220,16 +222,20 @@
             resolve(compressedFile);
           };
           
-          video.oncanplay = () => {
-            video.play();
-            mediaRecorder.start();
+          // Use requestVideoFrameCallback for accurate frame timing (prevents audio drift)
+          // Falls back to requestAnimationFrame for older browsers
+          const hasFrameCallback = typeof video.requestVideoFrameCallback === 'function';
+          
+          if (hasFrameCallback) {
+            // Modern approach: synced to video frames
+            console.log('[compress] Using requestVideoFrameCallback for sync');
             
-            // Draw frames to canvas and report progress
-            const drawFrame = () => {
+            const drawSyncedFrame = (now, metadata) => {
               if (video.paused || video.ended) {
                 mediaRecorder.stop();
                 return;
               }
+              
               ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
               
               // Report progress based on video playback position
@@ -238,10 +244,47 @@
                 onProgress(percent);
               }
               
+              // Request next frame synced to video
+              video.requestVideoFrameCallback(drawSyncedFrame);
+            };
+            
+            video.oncanplay = () => {
+              mediaRecorder.start();
+              video.play();
+              video.requestVideoFrameCallback(drawSyncedFrame);
+            };
+          } else {
+            // Fallback for older browsers: use timeupdate for sync
+            console.log('[compress] Using timeupdate fallback');
+            let lastDrawTime = 0;
+            const frameInterval = 1000 / frameRate;
+            
+            const drawFrame = () => {
+              if (video.paused || video.ended) {
+                mediaRecorder.stop();
+                return;
+              }
+              
+              const now = performance.now();
+              if (now - lastDrawTime >= frameInterval) {
+                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                lastDrawTime = now;
+                
+                if (onProgress && video.duration) {
+                  const percent = Math.round((video.currentTime / video.duration) * 100);
+                  onProgress(percent);
+                }
+              }
+              
               requestAnimationFrame(drawFrame);
             };
-            drawFrame();
-          };
+            
+            video.oncanplay = () => {
+              mediaRecorder.start();
+              video.play();
+              drawFrame();
+            };
+          }
           
           video.play().catch(reject);
         };

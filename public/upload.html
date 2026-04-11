@@ -222,6 +222,14 @@
             resolve(compressedFile);
           };
           
+          // Fallback: ensure recorder stops when video ends (prevents 99% hang)
+          video.onended = () => {
+            if (mediaRecorder.state !== 'inactive') {
+              console.log('[compress] Video ended, stopping recorder');
+              mediaRecorder.stop();
+            }
+          };
+          
           // Use requestVideoFrameCallback for accurate frame timing (prevents audio drift)
           // Falls back to requestAnimationFrame for older browsers
           const hasFrameCallback = typeof video.requestVideoFrameCallback === 'function';
@@ -285,8 +293,6 @@
               drawFrame();
             };
           }
-          
-          video.play().catch(reject);
         };
         
         video.onerror = () => reject(new Error('Failed to load video'));

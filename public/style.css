@@ -66,6 +66,33 @@ body {
   font-weight: 600;
   opacity: 0.95;
   margin-bottom: 4px;
+  cursor: pointer;
+  outline: none;
+  min-height: 1.2em;
+  border-radius: 4px;
+  transition: background 0.15s;
+}
+
+.video-info .title:hover {
+  background: rgba(255,255,255,0.1);
+}
+
+.video-info .title.title-empty {
+  opacity: 0.4;
+  font-style: italic;
+}
+
+.video-info .title.editing {
+  background: rgba(255,255,255,0.15);
+  text-shadow: none;
+}
+
+.video-info .title.saving {
+  opacity: 0.6;
+}
+
+.video-info .title.error {
+  background: rgba(229, 62, 62, 0.3);
 }
 
 .video-info .description {

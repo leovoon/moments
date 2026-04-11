@@ -104,7 +104,11 @@
           
           <div class="video-info">
             <div class="username">@${video.username}</div>
-            ${video.title ? `<div class="title">${escapeHtml(video.title)}</div>` : ''} 
+            <div class="title ${video.title ? '' : 'title-empty'}" 
+                 data-video-id="${video.id}" 
+                 data-original="${escapeHtml(video.title || '')}"
+                 contenteditable="false"
+                 onclick="startEditTitle(this)">${video.title ? escapeHtml(video.title) : 'Add title...'}</div>
             ${video.description ? `<div class="description">${escapeHtml(video.description)}</div>` : ''}
             <div class="date">${formatDate(video.created_at)}</div>
           </div>
@@ -298,6 +302,100 @@
       if (days < 7) return `${days}d ago`;
       
       return date.toLocaleDateString();
+    }
+
+    // --- Title Editing ---
+    function startEditTitle(el) {
+      if (el.contentEditable === 'true') return; // Already editing
+      
+      el.contentEditable = 'true';
+      el.classList.add('editing');
+      
+      // If empty placeholder, clear it
+      if (el.classList.contains('title-empty')) {
+        el.textContent = '';
+        el.classList.remove('title-empty');
+      }
+      
+      // Select all text
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+      
+      // Store original value for cancel
+      el.dataset.editing = 'true';
+      
+      // Save on blur or Enter
+      el.onblur = () => saveTitle(el);
+      el.onkeydown = (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          el.blur();
+        } else if (e.key === 'Escape') {
+          cancelEdit(el);
+        }
+      };
+    }
+
+    async function saveTitle(el) {
+      if (el.dataset.editing !== 'true') return;
+      
+      el.dataset.editing = 'false';
+      const videoId = el.dataset.videoId;
+      const newTitle = el.textContent.trim();
+      const originalTitle = el.dataset.original;
+      
+      // No change? Just exit edit mode
+      if (newTitle === originalTitle) {
+        exitEditMode(el, newTitle);
+        return;
+      }
+      
+      // Show saving state
+      el.classList.add('saving');
+      
+      try {
+        const response = await fetch(`/api/videos/${videoId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title: newTitle })
+        });
+        
+        if (response.ok) {
+          el.dataset.original = newTitle;
+          exitEditMode(el, newTitle);
+          // Update local videos array
+          const idx = videos.findIndex(v => v.id === parseInt(videoId));
+          if (idx >= 0) videos[idx].title = newTitle || null;
+        } else {
+          throw new Error('Save failed');
+        }
+      } catch (err) {
+        console.error('Save title error:', err);
+        exitEditMode(el, originalTitle);
+        // Brief error flash
+        el.classList.add('error');
+        setTimeout(() => el.classList.remove('error'), 1000);
+      }
+    }
+
+    function cancelEdit(el) {
+      el.dataset.editing = 'false';
+      exitEditMode(el, el.dataset.original);
+    }
+
+    function exitEditMode(el, text) {
+      el.contentEditable = 'false';
+      el.classList.remove('editing', 'saving');
+      
+      if (text) {
+        el.textContent = text;
+      } else {
+        el.textContent = 'Add title...';
+        el.classList.add('title-empty');
+      }
     }
 
     // Initialize

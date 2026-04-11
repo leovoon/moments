@@ -356,7 +356,7 @@ const server = Bun.serve({
     // CORS headers for API
     const corsHeaders = {
       "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+      "Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS",
       "Access-Control-Allow-Headers": "Content-Type",
     };
 
@@ -635,6 +635,46 @@ const server = Bun.serve({
         });
       }
     }
+    // PATCH /api/videos/:id - Update video metadata
+    const updateMatch = path.match(/^\/api\/videos\/(\d+)$/);
+    if (updateMatch && method === "PATCH") {
+      const user = checkAuth(req);
+      if (!user) {
+        return new Response("Unauthorized", { status: 401 });
+      }
+
+      try {
+        const videoId = parseInt(updateMatch[1]);
+        const body = await req.json();
+        const { title, description } = body;
+
+        // Build update query dynamically
+        const updates: string[] = [];
+        const values: any[] = [];
+
+        if (title !== undefined) {
+          updates.push("title = ?");
+          values.push(title.trim() || null);
+        }
+        if (description !== undefined) {
+          updates.push("description = ?");
+          values.push(description.trim() || null);
+        }
+
+        if (updates.length === 0) {
+          return Response.json({ error: "No fields to update" }, { status: 400, headers: corsHeaders });
+        }
+
+        values.push(videoId);
+        db.run(`UPDATE videos SET ${updates.join(", ")} WHERE id = ?`, values);
+
+        return Response.json({ success: true }, { headers: corsHeaders });
+      } catch (error) {
+        console.error("Update error:", error);
+        return Response.json({ error: "Update failed" }, { status: 500, headers: corsHeaders });
+      }
+    }
+
     // DELETE /api/videos/:id - Delete video
     const deleteMatch = path.match(/^\/api\/videos\/(\d+)$/);
     if (deleteMatch && method === "DELETE") {
